@@ -5,8 +5,9 @@ UI as **FBK Checker**. No install, no build step: open `index.html` in a
 browser.
 
 **Draft from aerial:** drag a box on the aerial map and CAD Auto drafts the
-curb lines and building footprints inside it (from OpenStreetMap or your
-ArcGIS curb and building layers) in Ramsey County feet, shows them in a CAD
+curb lines and building footprints inside it. It traces the curbs
+automatically from the aerial image, or takes them from OpenStreetMap or your
+ArcGIS layers, in Ramsey County feet, shows them in a CAD
 view, and exports a DXF. See [Draft From Aerial](wiki/Draft-From-Aerial.md).
 
 ## Quick start

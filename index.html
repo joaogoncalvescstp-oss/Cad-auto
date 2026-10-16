@@ -67,6 +67,7 @@ canvas{position:absolute;inset:0;display:none;width:100%;height:100%;touch-actio
 .field label{display:block;font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mut);margin-bottom:4px}
 .field input,.field select{width:100%;background:var(--panel2);border:1px solid var(--rule);color:var(--ink);border-radius:6px;padding:7px 9px;font:12px var(--mono)}
 .field input:focus,.field select:focus{outline:none;border-color:var(--gold-dim)}
+.field input[type=range]{padding:0;border:none;background:none;accent-color:var(--gold)}
 .lyr{background:var(--panel2);border:1px solid var(--rule);border-radius:6px;padding:8px 10px;margin-bottom:8px}
 .lyr .hd{display:flex;align-items:center;gap:8px;font:600 12px var(--mono);cursor:pointer}
 .lyr .hd i{display:inline-block;width:14px;height:3px;margin-left:auto}
@@ -101,7 +102,7 @@ canvas{position:absolute;inset:0;display:none;width:100%;height:100%;touch-actio
     <button class="btn ghost" id="fitBtn" title="Zoom to the drafted linework">⊡ Fit</button>
     <button class="btn ghost" id="clearBtn" disabled title="Delete all drafted linework">✕ Clear</button>
     <button class="btn gold" id="dxfBtn" disabled title="Download the drafted linework as a DXF (layers CURB, BLDG)">↓ Export DXF</button>
-    <span id="spaceBadge" title="version" onclick="spinBadge()">🪐 SATURN</span>
+    <span id="spaceBadge" title="version" onclick="spinBadge()">🌙 MOON</span>
   </div>
 
   <div class="main">
@@ -128,8 +129,13 @@ canvas{position:absolute;inset:0;display:none;width:100%;height:100%;touch-actio
           <div class="lyr">
             <label class="hd"><input type="checkbox" id="curbOn" checked> Curb lines <i style="background:var(--curb)"></i></label>
             <div class="field"><label>Source</label>
-              <select id="curbSrc"><option value="osm">OpenStreetMap (barrier=kerb)</option><option value="arcgis">ArcGIS layer URL</option></select></div>
+              <select id="curbSrc"><option value="aerial">Auto-trace from aerial image</option><option value="osm">OpenStreetMap (barrier=kerb)</option><option value="arcgis">ArcGIS layer URL</option></select></div>
             <div class="field" id="curbUrlF" hidden><label>Curb layer URL</label><input id="curbUrl" placeholder="https://…/MapServer/0"></div>
+            <div id="traceF">
+              <div class="field"><label>Pavement tolerance <span id="traceTolV">1.0</span></label><input type="range" id="traceTol" min="0.5" max="2" step="0.1" value="1"></div>
+              <div class="field"><label>Max curb offset from centerline (ft)</label><input type="number" id="traceMax" min="10" max="120" step="5" value="45"></div>
+              <label class="hd" style="font-size:11px;margin-top:6px"><input type="checkbox" id="showPave"> Show detected pavement</label>
+            </div>
           </div>
           <div class="lyr">
             <label class="hd"><input type="checkbox" id="bldgOn" checked> Buildings <i style="background:var(--bldg)"></i></label>
@@ -165,7 +171,7 @@ const cv = $('cv'), ctx = cv.getContext('2d');
 
 // VERSION MARKER — bumped on every push so you can confirm the page isn't cached.
 // If the badge matches what Claude said it pushed, you have the latest build.
-const VERSION={emoji:'🪐',name:'SATURN',build:2};
+const VERSION={emoji:'🌙',name:'MOON',build:3};
 function showVersion(){const b=$('spaceBadge');b.textContent=`${VERSION.emoji} ${VERSION.name}`;b.title=`Build ${VERSION.build} · ${VERSION.name} — if this matches what Claude pushed, you're on the latest (no cache)`;}
 function spinBadge(){const b=$('spaceBadge');b.style.transform='rotate(360deg)';setTimeout(()=>{b.style.transform='rotate(0deg)';},200);}
 
@@ -255,8 +261,8 @@ function setArea(b){
 // OpenStreetMap via Overpass (CORS-enabled). Returns [{pts:[[lat,lon]],closed}]
 async function fetchOSM(kind,a){
   const bb=`${a.s},${a.w},${a.n},${a.e}`;
-  const q=kind==='curb'
-    ?`[out:json][timeout:25];(way["barrier"="kerb"](${bb}););out geom;`
+  const q=kind==='road'?`[out:json][timeout:25];(way["highway"~"${ROAD_RE}"](${bb}););out geom;`
+    :kind==='curb'?`[out:json][timeout:25];(way["barrier"="kerb"](${bb}););out geom;`
     :`[out:json][timeout:25];(way["building"](${bb});relation["building"](${bb}););out geom;`;
   const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:'data='+encodeURIComponent(q),headers:{'Content-Type':'application/x-www-form-urlencoded'}});
   if(!r.ok)throw new Error(`OpenStreetMap HTTP ${r.status}`);
@@ -296,7 +302,141 @@ async function fetchArcGIS(url,a){
 async function fetchLayer(kind,a){
   const src=$(kind+'Src').value;
   if(src==='arcgis'){const u=$(kind+'Url').value;if(!u.trim())throw new Error(`Paste a ${kind==='curb'?'curb':'building'} layer URL first`);return fetchArcGIS(u,a);}
+  if(src==='aerial')return traceCurbsFromAerial(a);
   return fetchOSM(kind,a);
+}
+
+/* ---------- auto-trace curbs from the aerial image ----------
+   1. Download the Esri aerial for the area (Esri sends CORS headers, so the pixels are readable;
+      Ramsey County's server doesn't, so tracing always uses Esri whatever the basemap is).
+   2. Pull OSM street centerlines and sample the pavement color along them (median + spread).
+   3. Grow the paved area out from the centerlines: pixels close to that color AND within
+      "max curb offset" of a centerline. Fill small holes (cars, lane paint), smooth.
+   4. Trace the edge of the paved area (marching squares) → simplify → curb polylines.
+   It's a draft: tree canopy and shadows over the gutter will bend or break the line. */
+const MERC_R=6378137;
+const llToMerc=(la,lo)=>[MERC_R*lo*Math.PI/180,MERC_R*Math.log(Math.tan(Math.PI/4+la*Math.PI/360))];
+const mercToLL=(x,y)=>[(2*Math.atan(Math.exp(y/MERC_R))-Math.PI/2)*180/Math.PI,x/MERC_R*180/Math.PI];
+const ROAD_RE='^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street)(_link)?$';
+let lastTrace=null;   // {url, bounds} pavement mask for the "show detected pavement" overlay
+
+function loadImg(url){return new Promise((res,rej)=>{const im=new Image();im.crossOrigin='anonymous';
+  im.onload=()=>res(im);im.onerror=()=>rej(new Error('Aerial image failed to download'));im.src=url;});}
+async function fetchAerialPixels(a){
+  const[x0,y0]=llToMerc(a.s,a.w),[x1,y1]=llToMerc(a.n,a.e),k=Math.cos((a.s+a.n)/360*Math.PI);
+  const res=Math.max(0.3,(x1-x0)*k/2048,(y1-y0)*k/2048);               // ground m/px, ~1 ft
+  const W=Math.max(16,Math.round((x1-x0)*k/res)),H=Math.max(16,Math.round((y1-y0)*k/res));
+  const im=await loadImg('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export'+
+    `?bbox=${x0},${y0},${x1},${y1}&bboxSR=3857&imageSR=3857&size=${W},${H}&adjustAspectRatio=false&format=png24&f=image`);
+  const c=document.createElement('canvas');c.width=W;c.height=H;const g=c.getContext('2d',{willReadFrequently:true});g.drawImage(im,0,0,W,H);
+  let data;try{data=g.getImageData(0,0,W,H).data;}catch(e){throw new Error('The browser blocked reading the aerial pixels (CORS)');}
+  return{W,H,data,res,
+    toLL:(px,py)=>mercToLL(x0+px/W*(x1-x0),y1-py/H*(y1-y0)),
+    toPx:(la,lo)=>{const[x,y]=llToMerc(la,lo);return[(x-x0)/(x1-x0)*W,(y1-y)/(y1-y0)*H];}};
+}
+function boxBlur(src,W,H,r){const tmp=new Float32Array(W*H),out=new Float32Array(W*H);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){let s=0,n=0;for(let d=-r;d<=r;d++){const xx=x+d;if(xx>=0&&xx<W){s+=src[y*W+xx];n++;}}tmp[y*W+x]=s/n;}
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){let s=0,n=0;for(let d=-r;d<=r;d++){const yy=y+d;if(yy>=0&&yy<H){s+=tmp[yy*W+x];n++;}}out[y*W+x]=s/n;}
+  return out;}
+function morph(m,W,H,r,dilate){   // square-kernel dilate/erode, separable
+  const t=new Uint8Array(W*H),o=new Uint8Array(W*H),v=dilate?1:0;
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){let hit=!v;for(let d=-r;d<=r;d++){const xx=Math.min(W-1,Math.max(0,x+d));if(m[y*W+xx]===v){hit=v;break;}}t[y*W+x]=hit?1:0;}
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){let hit=!v;for(let d=-r;d<=r;d++){const yy=Math.min(H-1,Math.max(0,y+d));if(t[yy*W+x]===v){hit=v;break;}}o[y*W+x]=hit?1:0;}
+  return o;}
+function fillHoles(m,W,H,maxPx){   // fill enclosed non-pavement blobs smaller than maxPx (cars, paint)
+  const seen=new Uint8Array(W*H),st=[];
+  for(let i=0;i<W*H;i++){if(m[i]||seen[i])continue;const comp=[];let border=false;st.push(i);seen[i]=1;
+    while(st.length){const j=st.pop();comp.push(j);const x=j%W,y=(j/W)|0;if(x===0||y===0||x===W-1||y===H-1)border=true;
+      for(const n of[x>0?j-1:-1,x<W-1?j+1:-1,y>0?j-W:-1,y<H-1?j+W:-1])if(n>=0&&!m[n]&&!seen[n]){seen[n]=1;st.push(n);}}
+    if(!border&&comp.length<=maxPx)for(const j of comp)m[j]=1;}
+  return m;}
+function marchingSquares(f,W,H,iso){   // → polylines in pixel coords, linked through shared cell edges
+  const pos=new Map(),segs=[],adj=new Map();
+  const hId=(x,y)=>(y*W+x)*2,vId=(x,y)=>(y*W+x)*2+1;
+  const P=(id,px,py)=>{if(!pos.has(id))pos.set(id,[px,py]);return id;};
+  const lerp=(a,b)=>(iso-a)/(b-a);
+  for(let y=0;y<H-1;y++)for(let x=0;x<W-1;x++){
+    const a=f[y*W+x],b=f[y*W+x+1],c=f[(y+1)*W+x+1],d=f[(y+1)*W+x];
+    const idx=(a>iso?8:0)|(b>iso?4:0)|(c>iso?2:0)|(d>iso?1:0);if(idx===0||idx===15)continue;
+    const T=()=>P(hId(x,y),x+lerp(a,b),y),R=()=>P(vId(x+1,y),x+1,y+lerp(b,c)),
+          B=()=>P(hId(x,y+1),x+lerp(d,c),y+1),Lf=()=>P(vId(x,y),x,y+lerp(a,d));
+    const add=(p,q)=>{const s=segs.length;segs.push([p,q]);for(const e of[p,q]){if(!adj.has(e))adj.set(e,[]);adj.get(e).push(s);}};
+    const mid=(a+b+c+d)/4>iso;
+    switch(idx){
+      case 1:case 14:add(Lf(),B());break; case 2:case 13:add(B(),R());break;
+      case 3:case 12:add(Lf(),R());break; case 4:case 11:add(T(),R());break;
+      case 6:case 9:add(T(),B());break;   case 7:case 8:add(Lf(),T());break;
+      case 5:if(mid){add(Lf(),T());add(B(),R());}else{add(Lf(),B());add(T(),R());}break;
+      case 10:if(mid){add(T(),R());add(Lf(),B());}else{add(Lf(),T());add(B(),R());}break;}}
+  const used=new Uint8Array(segs.length),lines=[];
+  const walk=(s,from)=>{const out=[from];let cur=s,e=from;
+    while(cur>=0&&!used[cur]){used[cur]=1;const[p,q]=segs[cur];e=p===e?q:p;out.push(e);cur=(adj.get(e)||[]).find(t=>!used[t])??-1;}
+    return out;};
+  for(let s=0;s<segs.length;s++){if(used[s])continue;
+    const[p,q]=segs[s],fwd=walk(s,p);                      // walks p→q→…
+    const back=[];let e=p,cur=(adj.get(p)||[]).find(t=>!used[t])??-1;   // then extend backwards from p
+    while(cur>=0){used[cur]=1;const[a,b]=segs[cur];e=a===e?b:a;back.push(e);cur=(adj.get(e)||[]).find(t=>!used[t])??-1;}
+    const ids=[...back.reverse(),...fwd];lines.push(ids.map(i=>pos.get(i)));}
+  return lines;}
+function simplifyDP(pts,tol){if(pts.length<3)return pts;const keep=new Uint8Array(pts.length);keep[0]=keep[pts.length-1]=1;const st=[[0,pts.length-1]];
+  while(st.length){const[i,j]=st.pop();const[ax,ay]=pts[i],[bx,by]=pts[j],dx=bx-ax,dy=by-ay,L=Math.hypot(dx,dy)||1;let md=0,mi=-1;
+    for(let k=i+1;k<j;k++){const d=Math.abs((pts[k][0]-ax)*dy-(pts[k][1]-ay)*dx)/L;if(d>md){md=d;mi=k;}}
+    if(md>tol){keep[mi]=1;st.push([i,mi],[mi,j]);}}
+  return pts.filter((_,k)=>keep[k]);}
+const polyLen=p=>p.reduce((s,q,i)=>i?s+Math.hypot(q[0]-p[i-1][0],q[1]-p[i-1][1]):0,0);
+
+async function traceCurbsFromAerial(a){
+  const tol=+$('traceTol').value,maxFt=+$('traceMax').value||45;
+  const[img,roads]=await Promise.all([fetchAerialPixels(a),fetchOSM('road',a)]);
+  const{W,H,data,res}=img,N=W*H,ftPx=0.3048/res;   // pixels per foot
+  if(!roads.length)throw new Error('No street centerlines in this area to start from — select an area with streets');
+  const ch=[0,1,2].map(c=>{const v=new Float32Array(N);for(let i=0;i<N;i++)v[i]=data[i*4+c];return boxBlur(v,W,H,1);});
+  // seed pixels along the centerlines
+  const seed=new Uint8Array(N),seeds=[];
+  for(const f of roads){const P=f.pts.map(p=>img.toPx(p[0],p[1]));
+    for(let i=0;i+1<P.length;i++){const[x0,y0]=P[i],[x1,y1]=P[i+1],n=Math.ceil(Math.hypot(x1-x0,y1-y0)*2);
+      for(let k=0;k<=n;k++){const x=Math.round(x0+(x1-x0)*k/n),y=Math.round(y0+(y1-y0)*k/n);
+        if(x>=0&&y>=0&&x<W&&y<H&&!seed[y*W+x]){seed[y*W+x]=1;seeds.push(y*W+x);}}}}
+  if(seeds.length<20)throw new Error('Street centerlines barely enter the selected area — draw a bigger box');
+  const med=arr=>{const s=Float32Array.from(arr).sort();return s[s.length>>1];};
+  const ref=ch.map(c=>med(seeds.map(i=>c[i])));
+  const cdist=i=>Math.hypot(ch[0][i]-ref[0],ch[1][i]-ref[1],ch[2][i]-ref[2]);
+  const spread=med(seeds.map(cdist));
+  const T=Math.min(70,Math.max(16,2.2*spread+12))*tol;
+  // distance (px) from the nearest centerline — two-pass chamfer
+  const dist=new Float32Array(N).fill(1e9);for(const i of seeds)dist[i]=0;const D2=Math.SQRT2;
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){const i=y*W+x;let d=dist[i];
+    if(x>0)d=Math.min(d,dist[i-1]+1);if(y>0){d=Math.min(d,dist[i-W]+1);if(x>0)d=Math.min(d,dist[i-W-1]+D2);if(x<W-1)d=Math.min(d,dist[i-W+1]+D2);}dist[i]=d;}
+  for(let y=H-1;y>=0;y--)for(let x=W-1;x>=0;x--){const i=y*W+x;let d=dist[i];
+    if(x<W-1)d=Math.min(d,dist[i+1]+1);if(y<H-1){d=Math.min(d,dist[i+W]+1);if(x<W-1)d=Math.min(d,dist[i+W+1]+D2);if(x>0)d=Math.min(d,dist[i+W-1]+D2);}dist[i]=d;}
+  const maxD=maxFt*ftPx;
+  // grow the pavement from the seeds
+  let m=new Uint8Array(N);const ok=i=>dist[i]<=maxD&&cdist(i)<=T;const st=[];
+  for(const i of seeds)if(ok(i)){m[i]=1;st.push(i);}
+  while(st.length){const j=st.pop(),x=j%W,y=(j/W)|0;
+    for(const n of[x>0?j-1:-1,x<W-1?j+1:-1,y>0?j-W:-1,y<H-1?j+W:-1])if(n>=0&&!m[n]&&ok(n)){m[n]=1;st.push(n);}}
+  for(const i of seeds)if(dist[i]===0)m[i]=1;      // centerline itself is pavement even under a car
+  const r=Math.max(1,Math.round(2*ftPx));
+  m=morph(morph(m,W,H,r,true),W,H,r,false);         // close: bridge paint / small gaps
+  m=fillHoles(m,W,H,Math.round(500*ftPx*ftPx));     // cars, manholes, lane paint up to ~500 sq ft
+  m=morph(morph(m,W,H,1,false),W,H,1,true);         // open: drop 1-px spurs
+  let cov=0;for(let i=0;i<N;i++)cov+=m[i];
+  for(let x=0;x<W;x++){m[x]=0;m[(H-1)*W+x]=0;}for(let y=0;y<H;y++){m[y*W]=0;m[y*W+W-1]=0;}   // close contours inside the frame
+  const f=boxBlur(Float32Array.from(m),W,H,1);
+  // trace, cut off the artificial edges along the frame, simplify, drop short bits
+  const out=[],edge=3,inFrame=([x,y])=>x>edge&&y>edge&&x<W-1-edge&&y<H-1-edge,minLen=15*ftPx;
+  for(const line of marchingSquares(f,W,H,0.5)){
+    const closed=line.length>3&&line[0][0]===line[line.length-1][0]&&line[0][1]===line[line.length-1][1];
+    let runs=[],cur=[];for(const p of line){if(inFrame(p))cur.push(p);else{if(cur.length>1)runs.push(cur);cur=[];}}if(cur.length>1)runs.push(cur);
+    if(closed&&runs.length===1&&runs[0].length===line.length){const s=simplifyDP(line.slice(0,-1),0.9);if(polyLen(line)>=minLen*2)out.push({pts:s.map(p=>img.toLL(p[0],p[1])),closed:true});continue;}
+    if(closed&&runs.length>1&&inFrame(line[0])){runs[0]=[...runs.pop(),...runs[0]];}   // a loop cut by the frame: rejoin across its start
+    for(const run of runs){if(polyLen(run)<minLen)continue;out.push({pts:simplifyDP(run,0.9).map(p=>img.toLL(p[0],p[1])),closed:false});}}
+  // pavement overlay image
+  const mc=document.createElement('canvas');mc.width=W;mc.height=H;const mg=mc.getContext('2d'),id=mg.createImageData(W,H);
+  for(let i=0;i<N;i++)if(m[i]){id.data[i*4]=241;id.data[i*4+1]=180;id.data[i*4+2]=52;id.data[i*4+3]=110;}
+  mg.putImageData(id,0,0);lastTrace={url:mc.toDataURL(),bounds:[[a.s,a.w],[a.n,a.e]]};
+  log(`Auto-trace: ${roads.length} streets · pavement ref rgb(${ref.map(v=>v|0).join(',')}) · tolerance ${T.toFixed(0)} · ${(cov/N*100).toFixed(0)}% paved · ${(res/0.3048).toFixed(2)} ft/px`);
+  return out;
 }
 
 /* ---------- clip polylines to the area (lat/lon, Liang–Barsky per segment) ---------- */
@@ -318,6 +458,7 @@ async function draft(){
   if(!area)return;const a={...area},btn=$('draftBtn');btn.disabled=true;btn.textContent='… drafting';
   const crs=$('crs').value,[E0,N0]=llToSurvey(a.s,a.w);
   const toXY=([la,lo])=>{const[E,N]=llToSurvey(la,lo);return crs==='local'?[E-E0,N-N0]:[E,N];};
+  if($('curbOn').checked&&$('curbSrc').value==='aerial')lastTrace=null;
   const d={crs,origin:[E0,N0],area:a,layers:{CURB:[],BLDG:[]},ll:{CURB:[],BLDG:[]}};
   const jobs=[];
   if($('curbOn').checked)jobs.push(['curb','CURB']);
@@ -329,7 +470,7 @@ async function draft(){
         if(L==='BLDG'){ // keep whole footprints that touch the area
           if(f.pts.some(p=>inArea(p,a))||clipLine(f.closed?[...f.pts,f.pts[0]]:f.pts,a).length){d.ll[L].push(f);d.layers[L].push({pts:f.pts.map(toXY),closed:f.closed});}
         }else for(const run of clipLine(f.closed?[...f.pts,f.pts[0]]:f.pts,a)){d.ll[L].push({pts:run,closed:false});d.layers[L].push({pts:run.map(toXY),closed:false});}}
-      log(`${L}: <b>${d.layers[L].length}</b> ${L==='BLDG'?'footprints':'lines'} from ${$(kind+'Src').value==='osm'?'OpenStreetMap':'ArcGIS'}`,d.layers[L].length?'ok':'');
+      log(`${L}: <b>${d.layers[L].length}</b> ${L==='BLDG'?'footprints':'lines'} from ${{osm:'OpenStreetMap',arcgis:'ArcGIS',aerial:'aerial auto-trace'}[$(kind+'Src').value]}`,d.layers[L].length?'ok':'');
       if(!d.layers[L].length&&kind==='curb'&&$('curbSrc').value==='osm')log('OpenStreetMap has few mapped curbs — use an ArcGIS curb layer for full coverage.');
     }catch(err){log(`${L}: ${esc(err.message)}`,'err');banner(`${L}: ${err.message}`,6000);}
   }));
@@ -338,6 +479,7 @@ async function draft(){
   needFit=true;if(view==='cad')fitCad();
 }
 function renderOverlay(){if(!overlay)return;overlay.clearLayers();if(!drawing)return;
+  if($('showPave').checked&&lastTrace)L.imageOverlay(lastTrace.url,lastTrace.bounds,{interactive:false}).addTo(overlay);
   for(const f of drawing.ll.CURB)L.polyline(f.pts,{color:'#35c184',weight:3,interactive:false}).addTo(overlay);
   for(const f of drawing.ll.BLDG)(f.closed?L.polygon:L.polyline)(f.pts,{color:'#7fb3ff',weight:2,fillOpacity:.12,interactive:false}).addTo(overlay);}
 function updateDrawInfo(){
@@ -421,10 +563,15 @@ $('draftBtn').onclick=draft;
 $('dxfBtn').onclick=exportDXF;
 $('clearBtn').onclick=()=>{drawing=null;renderOverlay();updateDrawInfo();drawCad();log('Cleared drawing');};
 for(const k of['curb','bldg']){
-  const src=$(k+'Src'),url=$(k+'Url'),f=$(k+'UrlF');
-  src.value=LS.get(k+'Src','osm');url.value=LS.get(k+'Url','');f.hidden=src.value!=='arcgis';
-  src.onchange=()=>{f.hidden=src.value!=='arcgis';LS.set(k+'Src',src.value);};
+  const src=$(k+'Src'),url=$(k+'Url'),f=$(k+'UrlF'),tf=$('traceF');
+  const sync=()=>{f.hidden=src.value!=='arcgis';if(k==='curb')tf.hidden=src.value!=='aerial';};
+  src.value=LS.get(k+'Src',k==='curb'?'aerial':'osm');if(src.selectedIndex<0)src.value='osm';sync();
+  src.onchange=()=>{sync();LS.set(k+'Src',src.value);};
   url.onchange=()=>LS.set(k+'Url',url.value.trim());}
+$('traceTol').value=LS.get('traceTol','1');$('traceTolV').textContent=(+$('traceTol').value).toFixed(1);
+$('traceTol').oninput=()=>{$('traceTolV').textContent=(+$('traceTol').value).toFixed(1);LS.set('traceTol',$('traceTol').value);};
+$('traceMax').value=LS.get('traceMax','45');$('traceMax').onchange=()=>LS.set('traceMax',$('traceMax').value);
+$('showPave').onchange=renderOverlay;
 $('crs').value=LS.get('crs','ramsey');$('crs').onchange=()=>LS.set('crs',$('crs').value);
 $('basemap').value=LS.get('basemap','esri');$('basemap').onchange=()=>setBasemap($('basemap').value);
 document.addEventListener('keydown',e=>{if(e.key==='Escape')setSelecting(false);});
