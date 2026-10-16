@@ -40,6 +40,7 @@ In order; after the last one, wrap back to the top.
 | Build | Emoji | Note |
 |-------|-------|------|
 | 1 | 🚀 ROCKET | repo setup: main branch, README, wiki, AI instructions, FBK-style UI shell |
+| 2 | 🪐 SATURN | aerial map: select area → draft curb + building CAD lines (OSM or ArcGIS layer) → CAD view + DXF export (Ramsey Co. ft) |
 
 ## Project layout
 

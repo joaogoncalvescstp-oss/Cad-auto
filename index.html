@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>CAD Auto</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
 /* Design system borrowed from FBK Checker (navy + gold, mono labels, dark stage). */
 :root{
@@ -11,6 +12,7 @@
   --bg:#0a0f1c; --panel:#0f1626; --panel2:#131c30; --rule:#22304d;
   --ink:#e8edf6; --mut:#8a99b8; --grid:#16203a;
   --pass:#35c184; --warn:#f0b429; --fail:#ff5d52; --pt:#7fb3ff; --ctrl:#ffd24a;
+  --curb:#35c184; --bldg:#7fb3ff;
   --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
 }
 *{box-sizing:border-box;margin:0}
@@ -28,34 +30,61 @@ body{background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,s
 .btn.gold{background:var(--gold);color:#1b1300;border-color:var(--gold)}
 .btn.gold:hover{background:#ffc94d}
 .btn.ghost{background:transparent}
+.btn.on{border-color:var(--gold);color:var(--gold)}
 .btn[disabled]{opacity:.4;cursor:not-allowed}
-.file{position:relative;overflow:hidden}
-.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.btn.wide{width:100%;justify-content:center}
 .pill{font:600 11px var(--mono);color:var(--mut);padding:3px 8px;border:1px solid var(--rule);border-radius:20px}
+.seg{display:inline-flex}
+.seg .btn{border-radius:0}
+.seg .btn:first-child{border-radius:6px 0 0 6px}
+.seg .btn:last-child{border-radius:0 6px 6px 0;margin-left:-1px}
 #spaceBadge{font-size:14px;font-weight:700;letter-spacing:.06em;margin-left:12px;cursor:pointer;transition:transform .2s;white-space:nowrap}
 .main{display:grid;grid-template-columns:1fr 320px;min-height:0}
 .stage{position:relative;min-height:0;background:radial-gradient(120% 120% at 30% 0%,#0c1426,#070b16)}
-canvas{display:block;width:100%;height:100%;touch-action:none}
-.hud{position:absolute;left:12px;bottom:12px;font:600 11px var(--mono);color:var(--mut);background:rgba(7,11,22,.7);border:1px solid var(--rule);padding:6px 10px;border-radius:6px;pointer-events:none}
-.tools{position:absolute;left:12px;top:12px;display:flex;flex-direction:column;gap:6px}
+#map{position:absolute;inset:0;z-index:0;background:#070b16}
+#map.selecting{cursor:crosshair}
+#map .leaflet-control-attribution{background:rgba(7,11,22,.7);color:var(--mut);font:10px var(--mono)}
+#map .leaflet-control-attribution a{color:var(--pt)}
+canvas{position:absolute;inset:0;display:none;width:100%;height:100%;touch-action:none;cursor:grab}
+.stage.cad canvas{display:block}
+.stage.cad #map{visibility:hidden}
+.hud{position:absolute;left:12px;bottom:12px;z-index:500;font:600 11px var(--mono);color:var(--mut);background:rgba(7,11,22,.7);border:1px solid var(--rule);padding:6px 10px;border-radius:6px;pointer-events:none}
+.tools{position:absolute;left:12px;top:12px;z-index:500;display:flex;flex-direction:column;gap:6px}
 .tool{width:40px;height:40px;border-radius:8px;border:1px solid var(--rule);background:rgba(15,22,38,.85);color:var(--mut);cursor:pointer;font:700 14px var(--mono);display:grid;place-items:center}
 .tool:hover{color:var(--ink);border-color:var(--gold-dim)}
 .tool.on{background:var(--gold);color:#1b1300;border-color:var(--gold)}
+.tool[hidden]{display:none}
+.legend{position:absolute;right:12px;top:12px;z-index:500;background:rgba(7,11,22,.72);border:1px solid var(--rule);border-radius:8px;padding:9px 11px;font:600 11px var(--mono);color:var(--mut);display:grid;gap:5px}
+.legend i{display:inline-block;width:14px;height:3px;margin-right:7px;vertical-align:3px}
+.banner{position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:600;background:#2a1f08;border:1px solid var(--gold-dim);border-radius:6px;padding:7px 12px;font:600 11px var(--mono);color:#f3d99a;display:none;max-width:70%;text-align:center}
+.banner.show{display:block}
 .side{background:var(--panel);border-left:1px solid var(--rule);display:flex;flex-direction:column;min-height:0}
 .side h3{font:700 10px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--gold);padding:12px 14px 8px;border-bottom:1px solid var(--rule)}
 .scroll{overflow:auto;flex:1;padding:12px 14px}
-.empty{color:var(--mut);font-size:13px;text-align:center;padding:40px 14px;line-height:1.6}
+.sec{margin-bottom:16px}
+.sec h4{font:700 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--mut);margin-bottom:8px}
+.field{margin-bottom:10px}
+.field label{display:block;font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mut);margin-bottom:4px}
+.field input,.field select{width:100%;background:var(--panel2);border:1px solid var(--rule);color:var(--ink);border-radius:6px;padding:7px 9px;font:12px var(--mono)}
+.field input:focus,.field select:focus{outline:none;border-color:var(--gold-dim)}
+.lyr{background:var(--panel2);border:1px solid var(--rule);border-radius:6px;padding:8px 10px;margin-bottom:8px}
+.lyr .hd{display:flex;align-items:center;gap:8px;font:600 12px var(--mono);cursor:pointer}
+.lyr .hd i{display:inline-block;width:14px;height:3px;margin-left:auto}
+.lyr input[type=checkbox]{accent-color:var(--gold)}
+.lyr .field{margin:8px 0 0}
+.note{font-size:11px;color:var(--mut);line-height:1.5;margin-top:6px}
 .kv{display:flex;justify-content:space-between;font:12px var(--mono);padding:4px 0;border-bottom:1px dotted var(--rule)}
 .kv .k{color:var(--mut)} .kv .v{color:var(--ink)}
-.log{border-top:1px solid var(--rule);max-height:32%;display:flex;flex-direction:column}
+.log{border-top:1px solid var(--rule);max-height:28%;display:flex;flex-direction:column}
 .log h3{display:flex;align-items:center;gap:8px}
 .log .n{margin-left:auto;background:var(--gold);color:#1b1300;border-radius:20px;font:700 10px var(--mono);padding:1px 8px}
 .logscroll{overflow:auto;padding:4px 14px 12px}
 .le{font:11px/1.4 var(--mono);padding:6px 0;border-bottom:1px dotted var(--rule);color:var(--mut)}
-.le b{color:var(--ink)}
+.le b{color:var(--ink)} .le.err{color:var(--fail)} .le.ok{color:var(--pass)}
 @media(max-width:840px){
-  .main{grid-template-columns:1fr}
-  .side{display:none}
+  .main{grid-template-columns:1fr;grid-template-rows:1fr 45%}
+  .side{border-left:none;border-top:1px solid var(--rule)}
+  .legend{display:none}
 }
 </style>
 </head>
@@ -63,26 +92,63 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
 <div class="app">
   <div class="bar">
     <div class="brand"><span class="k">CAD · Automation</span><span class="t">CAD Auto</span></div>
-    <span class="pill" id="jobpill">no file</span>
+    <span class="pill" id="jobpill">no drawing</span>
     <div class="grow"></div>
-    <label class="btn file">↥ Load file<input type="file" id="fileInput" accept=".txt,.csv,.fbk,.dxf"></label>
-    <button class="btn ghost" id="fitBtn" disabled>⊡ Fit</button>
-    <button class="btn gold" id="exportBtn" disabled>↓ Export</button>
-    <span id="spaceBadge" title="version" onclick="spinBadge()">🚀 ROCKET</span>
+    <div class="seg">
+      <button class="btn on" id="viewMapBtn" title="Aerial map — select an area to draft from">🛰 Aerial</button>
+      <button class="btn" id="viewCadBtn" title="CAD view of the drafted linework">📐 CAD</button>
+    </div>
+    <button class="btn ghost" id="fitBtn" title="Zoom to the drafted linework">⊡ Fit</button>
+    <button class="btn ghost" id="clearBtn" disabled title="Delete all drafted linework">✕ Clear</button>
+    <button class="btn gold" id="dxfBtn" disabled title="Download the drafted linework as a DXF (layers CURB, BLDG)">↓ Export DXF</button>
+    <span id="spaceBadge" title="version" onclick="spinBadge()">🪐 SATURN</span>
   </div>
 
   <div class="main">
-    <div class="stage">
+    <div class="stage" id="stage">
+      <div id="map"></div>
       <canvas id="cv"></canvas>
       <div class="tools">
-        <button class="tool on" title="Select">⬚</button>
-        <button class="tool" title="Pan">✥</button>
+        <button class="tool" id="selTool" title="Select area: drag a box on the aerial">▭</button>
+        <button class="tool" id="viewSelTool" title="Use the whole visible map as the area">⛶</button>
       </div>
+      <div class="legend"><span><i style="background:var(--curb)"></i>CURB</span><span><i style="background:var(--bldg)"></i>BLDG</span><span><i style="background:var(--gold)"></i>AREA</span></div>
+      <div class="banner" id="banner"></div>
       <div class="hud" id="hud">ready</div>
     </div>
     <aside class="side">
-      <h3>Inspector</h3>
-      <div class="scroll" id="inspector"><div class="empty">Load a file to get started.</div></div>
+      <h3>Draft from map</h3>
+      <div class="scroll">
+        <div class="sec">
+          <h4>1 · Area</h4>
+          <div id="areaInfo" class="note">Click <b>▭</b> and drag a box on the aerial, or <b>⛶</b> to use the visible map.</div>
+        </div>
+        <div class="sec">
+          <h4>2 · Layers</h4>
+          <div class="lyr">
+            <label class="hd"><input type="checkbox" id="curbOn" checked> Curb lines <i style="background:var(--curb)"></i></label>
+            <div class="field"><label>Source</label>
+              <select id="curbSrc"><option value="osm">OpenStreetMap (barrier=kerb)</option><option value="arcgis">ArcGIS layer URL</option></select></div>
+            <div class="field" id="curbUrlF" hidden><label>Curb layer URL</label><input id="curbUrl" placeholder="https://…/MapServer/0"></div>
+          </div>
+          <div class="lyr">
+            <label class="hd"><input type="checkbox" id="bldgOn" checked> Buildings <i style="background:var(--bldg)"></i></label>
+            <div class="field"><label>Source</label>
+              <select id="bldgSrc"><option value="osm">OpenStreetMap (building=*)</option><option value="arcgis">ArcGIS layer URL</option></select></div>
+            <div class="field" id="bldgUrlF" hidden><label>Building layer URL</label><input id="bldgUrl" placeholder="https://…/FeatureServer/0"></div>
+          </div>
+          <div class="note">ArcGIS: paste a MapServer/FeatureServer <b>layer</b> URL (ends in <code>/0</code>, <code>/3</code>…). CORS isn't required.</div>
+        </div>
+        <div class="sec">
+          <h4>3 · Output</h4>
+          <div class="field"><label>Coordinates</label>
+            <select id="crs"><option value="ramsey">Ramsey County (US ft)</option><option value="local">Local (ft, SW corner = 0,0)</option></select></div>
+          <div class="field"><label>Aerial</label>
+            <select id="basemap"><option value="esri">Esri World Imagery</option><option value="ramsey">Ramsey County 2024</option></select></div>
+          <button class="btn gold wide" id="draftBtn" disabled>✏ Draft CAD lines</button>
+        </div>
+        <div class="sec" id="drawInfo"></div>
+      </div>
       <div class="log">
         <h3>Log <span class="n" id="logN">0</span></h3>
         <div class="logscroll" id="logList"></div>
@@ -91,6 +157,7 @@ canvas{display:block;width:100%;height:100%;touch-action:none}
   </div>
 </div>
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -98,30 +165,271 @@ const cv = $('cv'), ctx = cv.getContext('2d');
 
 // VERSION MARKER — bumped on every push so you can confirm the page isn't cached.
 // If the badge matches what Claude said it pushed, you have the latest build.
-const VERSION={emoji:'🚀',name:'ROCKET',build:1};
+const VERSION={emoji:'🪐',name:'SATURN',build:2};
 function showVersion(){const b=$('spaceBadge');b.textContent=`${VERSION.emoji} ${VERSION.name}`;b.title=`Build ${VERSION.build} · ${VERSION.name} — if this matches what Claude pushed, you're on the latest (no cache)`;}
 function spinBadge(){const b=$('spaceBadge');b.style.transform='rotate(360deg)';setTimeout(()=>{b.style.transform='rotate(0deg)';},200);}
 
+/* ---------- log / banner ---------- */
 const logEntries=[];
-function log(html){logEntries.unshift(html);$('logN').textContent=logEntries.length;
-  $('logList').innerHTML=logEntries.map(e=>`<div class="le">${e}</div>`).join('');}
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function log(html,cls=''){logEntries.unshift(`<div class="le ${cls}">${html}</div>`);$('logN').textContent=logEntries.length;$('logList').innerHTML=logEntries.join('');}
+let bannerT=0;
+function banner(msg,ms=4000){const b=$('banner');b.textContent=msg;b.classList.add('show');clearTimeout(bannerT);if(ms)bannerT=setTimeout(()=>b.classList.remove('show'),ms);}
 
+/* ---------- Ramsey County LCC (US ft) — same calibrated transform as FBK Checker ---------- */
+const RC={};
+(function(){const a=6378418.941,b=6357033.31,D=Math.PI/180;
+  const e=Math.sqrt(1-b*b/(a*a));
+  const dms=(d,mn,s)=>Math.sign(d)*(Math.abs(d)+mn/60+s/3600);
+  const phi1=dms(44,53,0)*D,phi2=dms(45,8,0)*D,lam0=dms(-93,23,0)*D,phi0=dms(44,47,28)*D;
+  const mm=p=>Math.cos(p)/Math.sqrt(1-e*e*Math.sin(p)*Math.sin(p));
+  const tt=p=>Math.tan(Math.PI/4-p/2)/Math.pow((1-e*Math.sin(p))/(1+e*Math.sin(p)),e/2);
+  const n=(Math.log(mm(phi1))-Math.log(mm(phi2)))/(Math.log(tt(phi1))-Math.log(tt(phi2)));
+  const F=mm(phi1)/(n*Math.pow(tt(phi1),n)),rho0=a*F*Math.pow(tt(phi0),n);
+  Object.assign(RC,{a,e,D,lam0,n,F,rho0,t:tt,FT:0.3048006096012,FE:500000,FN:100000});})();
+function llToSurvey(la,lo){const phi=la*RC.D,lam=lo*RC.D;
+  const rho=RC.a*RC.F*Math.pow(RC.t(phi),RC.n),th=RC.n*(lam-RC.lam0);
+  const x=rho*Math.sin(th),y=RC.rho0-rho*Math.cos(th);
+  return [RC.FE+x/RC.FT,RC.FN+y/RC.FT];}
+
+/* ---------- state ---------- */
+let area=null;            // {s,w,n,e} in lat/lon
+let drawing=null;         // {crs, origin:[E0,N0], layers:{CURB:[{pts:[[E,N]],closed}], BLDG:[…]}}
+let view='map';
+const LS={get(k,d){try{return localStorage.getItem('cadauto.'+k)??d;}catch(e){return d;}},set(k,v){try{localStorage.setItem('cadauto.'+k,v);}catch(e){}}};
+
+/* ---------- aerial map (Leaflet) ---------- */
+let map=null,baseLayer=null,areaRect=null,overlay=null,selecting=false;
+const BASEMAPS={
+  esri:()=>L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    {maxZoom:21,maxNativeZoom:19,attribution:'Imagery © Esri, Maxar, Earthstar Geographics'}),
+  // County ImageServer isn't tiled in Web Mercator: ask it for 256px tiles reprojected to 3857.
+  ramsey:()=>{const T=L.TileLayer.extend({getTileUrl(c){const z=this._getZoomForUrl(),n=Math.pow(2,z),R=6378137,W=2*Math.PI*R/n;
+      const x0=-Math.PI*R+c.x*W,y1=Math.PI*R-c.y*W;
+      return 'https://maps.co.ramsey.mn.us/arcgis/rest/services/OrthoPhotos/Aerial2024/ImageServer/exportImage'+
+        `?bbox=${x0},${y1-W},${x0+W},${y1}&bboxSR=3857&imageSR=3857&size=256,256&adjustAspectRatio=false&format=jpgpng&f=image`;}});
+    return new T('',{maxZoom:21,maxNativeZoom:21,minZoom:11,attribution:'Imagery © Ramsey County'});}
+};
+function setBasemap(k){if(!map)return;if(baseLayer)map.removeLayer(baseLayer);
+  baseLayer=(BASEMAPS[k]||BASEMAPS.esri)();let errs=0;
+  baseLayer.on('tileerror',()=>{if(++errs===8&&k!=='esri'){banner('Ramsey County aerial isn\'t loading here — switched to Esri.');$('basemap').value='esri';setBasemap('esri');}});
+  baseLayer.addTo(map);LS.set('basemap',k);}
+
+function initMap(){
+  if(!window.L){banner('Map library failed to load — check your connection.',0);return;}
+  const c=JSON.parse(LS.get('view','null')||'null')||{lat:44.9537,lng:-93.0900,z:17};
+  map=L.map('map',{zoomControl:false,boxZoom:false}).setView([c.lat,c.lng],c.z);
+  L.control.zoom({position:'bottomright'}).addTo(map);
+  overlay=L.layerGroup().addTo(map);
+  setBasemap(LS.get('basemap','esri'));
+  map.on('moveend',()=>{const m=map.getCenter();LS.set('view',JSON.stringify({lat:m.lat,lng:m.lng,z:map.getZoom()}));hudMap();});
+  map.on('mousemove',e=>{if(view!=='map')return;const[E,N]=llToSurvey(e.latlng.lat,e.latlng.lng);
+    $('hud').textContent=`E ${E.toFixed(1)}  N ${N.toFixed(1)}  ·  ${e.latlng.lat.toFixed(6)}, ${e.latlng.lng.toFixed(6)}`;});
+  // drag-a-box selection
+  let start=null,box=null;
+  map.on('mousedown',e=>{if(!selecting)return;start=e.latlng;box=L.rectangle([start,start],{color:'#F1B434',weight:2,fillOpacity:.08,dashArray:'6 4'}).addTo(map);});
+  map.on('mousemove',e=>{if(start&&box)box.setBounds([start,e.latlng]);});
+  map.on('mouseup',e=>{if(!start)return;$('banner').classList.remove('show');const b=L.latLngBounds(start,e.latlng);map.removeLayer(box);start=box=null;
+    setSelecting(false);if(map.latLngToContainerPoint(b.getNorthWest()).distanceTo(map.latLngToContainerPoint(b.getSouthEast()))<8){banner('Box too small — drag a larger area.');return;}
+    setArea(b);});
+  hudMap();
+}
+function hudMap(){if(view==='map'&&map)$('hud').textContent=`zoom ${map.getZoom()}`+(area?'  ·  area selected':'');}
+function setSelecting(on){selecting=on;$('selTool').classList.toggle('on',on);$('map').classList.toggle('selecting',on);
+  if(!map)return;on?map.dragging.disable():map.dragging.enable();if(on)banner('Drag a box around the curbs and buildings to draft.',3000);}
+function setArea(b){
+  area={s:b.getSouth(),w:b.getWest(),n:b.getNorth(),e:b.getEast()};
+  if(areaRect)map.removeLayer(areaRect);
+  areaRect=L.rectangle(b,{color:'#F1B434',weight:2,fill:false,dashArray:'6 4',interactive:false}).addTo(map);
+  const[E1,N1]=llToSurvey(area.s,area.w),[E2,N2]=llToSurvey(area.n,area.e);
+  const wft=Math.abs(E2-E1),hft=Math.abs(N2-N1);
+  $('areaInfo').innerHTML=`<div class="kv"><span class="k">Size</span><span class="v">${wft.toFixed(0)} × ${hft.toFixed(0)} ft</span></div>`+
+    `<div class="kv"><span class="k">SW</span><span class="v">${area.s.toFixed(6)}, ${area.w.toFixed(6)}</span></div>`+
+    `<div class="kv"><span class="k">NE</span><span class="v">${area.n.toFixed(6)}, ${area.e.toFixed(6)}</span></div>`+
+    (wft*hft>2.5e7?`<div class="note" style="color:var(--warn)">Large area — drafting may be slow or hit server limits.</div>`:'');
+  $('draftBtn').disabled=false;
+  log(`Area selected: <b>${wft.toFixed(0)} × ${hft.toFixed(0)} ft</b>`);hudMap();
+}
+
+/* ---------- data sources ---------- */
+// OpenStreetMap via Overpass (CORS-enabled). Returns [{pts:[[lat,lon]],closed}]
+async function fetchOSM(kind,a){
+  const bb=`${a.s},${a.w},${a.n},${a.e}`;
+  const q=kind==='curb'
+    ?`[out:json][timeout:25];(way["barrier"="kerb"](${bb}););out geom;`
+    :`[out:json][timeout:25];(way["building"](${bb});relation["building"](${bb}););out geom;`;
+  const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:'data='+encodeURIComponent(q),headers:{'Content-Type':'application/x-www-form-urlencoded'}});
+  if(!r.ok)throw new Error(`OpenStreetMap HTTP ${r.status}`);
+  const j=await r.json(),out=[];
+  for(const el of j.elements||[]){
+    if(el.type==='way'&&el.geometry)out.push(ring(el.geometry.map(g=>[g.lat,g.lon])));
+    else if(el.type==='relation')for(const m of el.members||[])if(m.type==='way'&&m.role!=='inner'&&m.geometry)out.push(ring(m.geometry.map(g=>[g.lat,g.lon])));}
+  return out;
+}
+function ring(pts){const a=pts[0],b=pts[pts.length-1];const closed=pts.length>3&&a[0]===b[0]&&a[1]===b[1];
+  return{pts:closed?pts.slice(0,-1):pts,closed};}
+
+// ArcGIS MapServer/FeatureServer layer via JSONP (works without CORS, like FBK's plain-<img> trick).
+let jsonpN=0;
+function jsonp(url,ms=25000){return new Promise((res,rej)=>{const cb='__cadauto_cb'+(++jsonpN),s=document.createElement('script');
+  const done=()=>{delete window[cb];s.remove();clearTimeout(t);};
+  const t=setTimeout(()=>{done();rej(new Error('ArcGIS request timed out'));},ms);
+  window[cb]=d=>{done();res(d);};s.onerror=()=>{done();rej(new Error('ArcGIS request failed (bad URL or server unreachable)'));};
+  s.src=url+(url.includes('?')?'&':'?')+'callback='+cb;document.head.appendChild(s);});}
+async function fetchArcGIS(url,a){
+  url=url.trim().replace(/\/+$/,'').replace(/\/query$/,'');
+  if(!/\/(MapServer|FeatureServer)\/\d+$/i.test(url))throw new Error('ArcGIS URL must end in /MapServer/<n> or /FeatureServer/<n>');
+  const out=[];let offset=0;
+  for(let page=0;page<20;page++){
+    const p=new URLSearchParams({where:'1=1',geometry:`${a.w},${a.s},${a.e},${a.n}`,geometryType:'esriGeometryEnvelope',inSR:'4326',
+      spatialRel:'esriSpatialRelIntersects',outFields:'OBJECTID',returnGeometry:'true',outSR:'4326',f:'json'});
+    if(page)p.set('resultOffset',offset);
+    const j=await jsonp(`${url}/query?${p}`);
+    if(j.error)throw new Error(`ArcGIS: ${j.error.message||'query failed'}${j.error.details?.length?' — '+j.error.details.join(' '):''}`);
+    for(const f of j.features||[]){const g=f.geometry||{};
+      for(const path of g.paths||[])out.push({pts:path.map(([x,y])=>[y,x]),closed:false});
+      for(const r of g.rings||[])out.push(ring(r.map(([x,y])=>[y,x])));}
+    if(!j.exceededTransferLimit||!(j.features||[]).length)break;
+    offset+=j.features.length;}
+  return out;
+}
+async function fetchLayer(kind,a){
+  const src=$(kind+'Src').value;
+  if(src==='arcgis'){const u=$(kind+'Url').value;if(!u.trim())throw new Error(`Paste a ${kind==='curb'?'curb':'building'} layer URL first`);return fetchArcGIS(u,a);}
+  return fetchOSM(kind,a);
+}
+
+/* ---------- clip polylines to the area (lat/lon, Liang–Barsky per segment) ---------- */
+function clipSeg(p,q,a){let t0=0,t1=1;const dx=q[1]-p[1],dy=q[0]-p[0];
+  for(const[pp,qq]of[[-dx,p[1]-a.w],[dx,a.e-p[1]],[-dy,p[0]-a.s],[dy,a.n-p[0]]]){
+    if(pp===0){if(qq<0)return null;continue;}const r=qq/pp;
+    if(pp<0){if(r>t1)return null;if(r>t0)t0=r;}else{if(r<t0)return null;if(r<t1)t1=r;}}
+  return[[p[0]+t0*dy,p[1]+t0*dx],[p[0]+t1*dy,p[1]+t1*dx],t0>0,t1<1];}
+function clipLine(pts,a){const runs=[];let cur=null;
+  for(let i=0;i+1<pts.length;i++){const c=clipSeg(pts[i],pts[i+1],a);
+    if(!c){if(cur){runs.push(cur);cur=null;}continue;}
+    if(!cur||c[2]){if(cur)runs.push(cur);cur=[c[0]];}
+    cur.push(c[1]);if(c[3]){runs.push(cur);cur=null;}}
+  if(cur)runs.push(cur);return runs.filter(r=>r.length>1);}
+const inArea=(p,a)=>p[0]>=a.s&&p[0]<=a.n&&p[1]>=a.w&&p[1]<=a.e;
+
+/* ---------- draft ---------- */
+async function draft(){
+  if(!area)return;const a={...area},btn=$('draftBtn');btn.disabled=true;btn.textContent='… drafting';
+  const crs=$('crs').value,[E0,N0]=llToSurvey(a.s,a.w);
+  const toXY=([la,lo])=>{const[E,N]=llToSurvey(la,lo);return crs==='local'?[E-E0,N-N0]:[E,N];};
+  const d={crs,origin:[E0,N0],area:a,layers:{CURB:[],BLDG:[]},ll:{CURB:[],BLDG:[]}};
+  const jobs=[];
+  if($('curbOn').checked)jobs.push(['curb','CURB']);
+  if($('bldgOn').checked)jobs.push(['bldg','BLDG']);
+  if(!jobs.length){banner('Tick at least one layer.');btn.disabled=false;btn.textContent='✏ Draft CAD lines';return;}
+  await Promise.all(jobs.map(async([kind,L])=>{
+    try{const feats=await fetchLayer(kind,a);
+      for(const f of feats){
+        if(L==='BLDG'){ // keep whole footprints that touch the area
+          if(f.pts.some(p=>inArea(p,a))||clipLine(f.closed?[...f.pts,f.pts[0]]:f.pts,a).length){d.ll[L].push(f);d.layers[L].push({pts:f.pts.map(toXY),closed:f.closed});}
+        }else for(const run of clipLine(f.closed?[...f.pts,f.pts[0]]:f.pts,a)){d.ll[L].push({pts:run,closed:false});d.layers[L].push({pts:run.map(toXY),closed:false});}}
+      log(`${L}: <b>${d.layers[L].length}</b> ${L==='BLDG'?'footprints':'lines'} from ${$(kind+'Src').value==='osm'?'OpenStreetMap':'ArcGIS'}`,d.layers[L].length?'ok':'');
+      if(!d.layers[L].length&&kind==='curb'&&$('curbSrc').value==='osm')log('OpenStreetMap has few mapped curbs — use an ArcGIS curb layer for full coverage.');
+    }catch(err){log(`${L}: ${esc(err.message)}`,'err');banner(`${L}: ${err.message}`,6000);}
+  }));
+  drawing=d;btn.disabled=false;btn.textContent='✏ Draft CAD lines';
+  renderOverlay();updateDrawInfo();
+  needFit=true;if(view==='cad')fitCad();
+}
+function renderOverlay(){if(!overlay)return;overlay.clearLayers();if(!drawing)return;
+  for(const f of drawing.ll.CURB)L.polyline(f.pts,{color:'#35c184',weight:3,interactive:false}).addTo(overlay);
+  for(const f of drawing.ll.BLDG)(f.closed?L.polygon:L.polyline)(f.pts,{color:'#7fb3ff',weight:2,fillOpacity:.12,interactive:false}).addTo(overlay);}
+function updateDrawInfo(){
+  const has=drawing&&(drawing.layers.CURB.length+drawing.layers.BLDG.length)>0;
+  $('dxfBtn').disabled=$('clearBtn').disabled=!has;
+  $('jobpill').textContent=has?`${drawing.layers.CURB.length} curb · ${drawing.layers.BLDG.length} bldg`:'no drawing';
+  if(!drawing){$('drawInfo').innerHTML='';return;}
+  const vc=k=>drawing.layers[k].reduce((s,f)=>s+f.pts.length,0);
+  $('drawInfo').innerHTML=`<h4>Drawing</h4>`+
+    `<div class="kv"><span class="k">CURB</span><span class="v">${drawing.layers.CURB.length} lines · ${vc('CURB')} vtx</span></div>`+
+    `<div class="kv"><span class="k">BLDG</span><span class="v">${drawing.layers.BLDG.length} polys · ${vc('BLDG')} vtx</span></div>`+
+    `<div class="kv"><span class="k">Coords</span><span class="v">${drawing.crs==='local'?'Local ft':'Ramsey Co. ft'}</span></div>`+
+    (drawing.crs==='local'?`<div class="kv"><span class="k">0,0 =</span><span class="v">E ${drawing.origin[0].toFixed(2)} N ${drawing.origin[1].toFixed(2)}</span></div>`:'');
+}
+
+/* ---------- CAD canvas ---------- */
+const cam={cx:0,cy:0,s:1};   // world center + pixels per ft
+let needFit=false;           // fit once the canvas is visible (it has no size while hidden)
 function resize(){const r=cv.getBoundingClientRect(),d=devicePixelRatio||1;
-  cv.width=r.width*d;cv.height=r.height*d;ctx.setTransform(d,0,0,d,0,0);draw();}
-function draw(){const w=cv.clientWidth,h=cv.clientHeight;ctx.clearRect(0,0,w,h);
-  ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--grid');ctx.lineWidth=1;
-  for(let x=0;x<w;x+=40){ctx.beginPath();ctx.moveTo(x+.5,0);ctx.lineTo(x+.5,h);ctx.stroke();}
-  for(let y=0;y<h;y+=40){ctx.beginPath();ctx.moveTo(0,y+.5);ctx.lineTo(w,y+.5);ctx.stroke();}}
+  cv.width=Math.max(1,r.width*d);cv.height=Math.max(1,r.height*d);ctx.setTransform(d,0,0,d,0,0);drawCad();}
+const W2S=([x,y])=>[cv.clientWidth/2+(x-cam.cx)*cam.s,cv.clientHeight/2-(y-cam.cy)*cam.s];
+const S2W=(px,py)=>[cam.cx+(px-cv.clientWidth/2)/cam.s,cam.cy-(py-cv.clientHeight/2)/cam.s];
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function drawCad(){
+  const w=cv.clientWidth,h=cv.clientHeight;ctx.clearRect(0,0,w,h);if(view!=='cad')return;
+  // grid at a round spacing
+  const steps=[1,2,5,10,20,50,100,200,500,1000,2000,5000];const g=steps.find(s=>s*cam.s>=40)||5000;
+  const[x0,y1]=S2W(0,0),[x1,y0]=S2W(w,h);ctx.strokeStyle=css('--grid');ctx.lineWidth=1;ctx.beginPath();
+  for(let x=Math.floor(x0/g)*g;x<=x1;x+=g){const X=Math.round(W2S([x,0])[0])+.5;ctx.moveTo(X,0);ctx.lineTo(X,h);}
+  for(let y=Math.floor(y0/g)*g;y<=y1;y+=g){const Y=Math.round(W2S([0,y])[1])+.5;ctx.moveTo(0,Y);ctx.lineTo(w,Y);}
+  ctx.stroke();
+  if(!drawing){ctx.fillStyle=css('--mut');ctx.font='13px '+css('--mono');ctx.textAlign='center';ctx.fillText('No linework yet — select an area on the Aerial view and Draft CAD lines.',w/2,h/2);return;}
+  // selection area
+  const a=drawing.area,toXY=p=>{const[E,N]=llToSurvey(p[0],p[1]);return drawing.crs==='local'?[E-drawing.origin[0],N-drawing.origin[1]]:[E,N];};
+  ctx.setLineDash([6,4]);ctx.strokeStyle=css('--gold');ctx.lineWidth=1.2;ctx.beginPath();
+  [[a.s,a.w],[a.s,a.e],[a.n,a.e],[a.n,a.w]].map(toXY).map(W2S).forEach(([X,Y],i)=>i?ctx.lineTo(X,Y):ctx.moveTo(X,Y));ctx.closePath();ctx.stroke();ctx.setLineDash([]);
+  for(const[k,col,lw]of[['BLDG','--bldg',1.5],['CURB','--curb',2]]){ctx.strokeStyle=css(col);ctx.lineWidth=lw;
+    for(const f of drawing.layers[k]){ctx.beginPath();f.pts.map(W2S).forEach(([X,Y],i)=>i?ctx.lineTo(X,Y):ctx.moveTo(X,Y));if(f.closed)ctx.closePath();ctx.stroke();}}
+  ctx.fillStyle=css('--mut');ctx.font='600 10px '+css('--mono');ctx.textAlign='right';ctx.fillText(`grid ${g} ft`,w-12,h-12);
+}
+function fitCad(){if(!drawing)return;let mnx=1/0,mny=1/0,mxx=-1/0,mxy=-1/0;
+  const a=drawing.area,corners=[[a.s,a.w],[a.n,a.e]].map(([la,lo])=>{const[E,N]=llToSurvey(la,lo);return drawing.crs==='local'?[E-drawing.origin[0],N-drawing.origin[1]]:[E,N];});
+  for(const f of[{pts:corners},...drawing.layers.CURB,...drawing.layers.BLDG])for(const[x,y]of f.pts){mnx=Math.min(mnx,x);mny=Math.min(mny,y);mxx=Math.max(mxx,x);mxy=Math.max(mxy,y);}
+  if(!isFinite(mnx))return;needFit=false;cam.cx=(mnx+mxx)/2;cam.cy=(mny+mxy)/2;
+  cam.s=Math.min((cv.clientWidth||800)/(mxx-mnx||10),(cv.clientHeight||600)/(mxy-mny||10))*.88;drawCad();}
+let drag=null;
+cv.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,cx:cam.cx,cy:cam.cy};cv.setPointerCapture(e.pointerId);cv.style.cursor='grabbing';});
+cv.addEventListener('pointermove',e=>{const r=cv.getBoundingClientRect(),[x,y]=S2W(e.clientX-r.left,e.clientY-r.top);
+  $('hud').textContent=`${drawing?.crs==='local'?'x':'E'} ${x.toFixed(2)}  ${drawing?.crs==='local'?'y':'N'} ${y.toFixed(2)}`;
+  if(drag){cam.cx=drag.cx-(e.clientX-drag.x)/cam.s;cam.cy=drag.cy+(e.clientY-drag.y)/cam.s;drawCad();}});
+cv.addEventListener('pointerup',()=>{drag=null;cv.style.cursor='grab';});
+cv.addEventListener('wheel',e=>{e.preventDefault();const r=cv.getBoundingClientRect(),px=e.clientX-r.left,py=e.clientY-r.top;
+  const[wx,wy]=S2W(px,py);cam.s*=Math.exp(-e.deltaY*.0015);const[nx,ny]=S2W(px,py);cam.cx+=wx-nx;cam.cy+=wy-ny;drawCad();},{passive:false});
 
-$('fileInput').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;
-  f.text().then(t=>{$('jobpill').textContent=f.name;
-    const lines=t.split(/\r?\n/).filter(Boolean).length;
-    $('inspector').innerHTML=`<div class="kv"><span class="k">File</span><span class="v">${f.name}</span></div><div class="kv"><span class="k">Lines</span><span class="v">${lines}</span></div>`;
-    $('hud').textContent=`${f.name} · ${lines} lines`;
-    log(`Loaded <b>${f.name}</b> (${lines} lines)`);});});
+/* ---------- DXF (R12 ASCII: POLYLINE on layers CURB / BLDG) ---------- */
+function exportDXF(){if(!drawing)return;const o=[],p=(c,v)=>o.push(c,v);
+  p(0,'SECTION');p(2,'HEADER');p(9,'$ACADVER');p(1,'AC1009');p(0,'ENDSEC');
+  p(0,'SECTION');p(2,'TABLES');p(0,'TABLE');p(2,'LAYER');p(70,3);
+  for(const[n,c]of[['AREA',2],['CURB',3],['BLDG',5]]){p(0,'LAYER');p(2,n);p(70,0);p(62,c);p(6,'CONTINUOUS');}
+  p(0,'ENDTAB');p(0,'ENDSEC');p(0,'SECTION');p(2,'ENTITIES');
+  const poly=(lay,pts,closed)=>{p(0,'POLYLINE');p(8,lay);p(66,1);p(70,closed?1:0);p(10,0);p(20,0);p(30,0);
+    for(const[x,y]of pts){p(0,'VERTEX');p(8,lay);p(10,x.toFixed(4));p(20,y.toFixed(4));p(30,0);}p(0,'SEQEND');p(8,lay);};
+  for(const k of['CURB','BLDG'])for(const f of drawing.layers[k])poly(k,f.pts,f.closed);
+  const a=drawing.area,toXY=q=>{const[E,N]=llToSurvey(q[0],q[1]);return drawing.crs==='local'?[E-drawing.origin[0],N-drawing.origin[1]]:[E,N];};
+  poly('AREA',[[a.s,a.w],[a.s,a.e],[a.n,a.e],[a.n,a.w]].map(toXY),true);
+  p(0,'ENDSEC');p(0,'EOF');
+  const blob=new Blob([o.join('\r\n')+'\r\n'],{type:'application/dxf'}),u=URL.createObjectURL(blob),el=document.createElement('a');
+  el.href=u;el.download=`cad-auto-${new Date().toISOString().slice(0,10)}.dxf`;document.body.appendChild(el);el.click();el.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);
+  log(`Exported DXF (${drawing.layers.CURB.length} curb, ${drawing.layers.BLDG.length} bldg)`,'ok');}
 
-window.addEventListener('resize',resize);
-window.addEventListener('load',()=>{showVersion();resize();log('App started');});
+/* ---------- view switching / wiring ---------- */
+function setView(v){view=v;$('stage').classList.toggle('cad',v==='cad');$('viewMapBtn').classList.toggle('on',v==='map');$('viewCadBtn').classList.toggle('on',v==='cad');
+  $('selTool').hidden=$('viewSelTool').hidden=v!=='map';
+  if(v==='cad'){setSelecting(false);resize();if(needFit)fitCad();}else{map?.invalidateSize();hudMap();}}
+$('viewMapBtn').onclick=()=>setView('map');
+$('viewCadBtn').onclick=()=>setView('cad');
+$('fitBtn').onclick=()=>{if(view==='cad')fitCad();else if(map){const b=drawing?overlay.getLayers().length&&L.featureGroup(overlay.getLayers()).getBounds():areaRect?.getBounds();if(b&&b.isValid())map.fitBounds(b,{padding:[30,30]});}};
+$('selTool').onclick=()=>setSelecting(!selecting);
+$('viewSelTool').onclick=()=>{if(map){setSelecting(false);setArea(map.getBounds().pad(-.03));}};
+$('draftBtn').onclick=draft;
+$('dxfBtn').onclick=exportDXF;
+$('clearBtn').onclick=()=>{drawing=null;renderOverlay();updateDrawInfo();drawCad();log('Cleared drawing');};
+for(const k of['curb','bldg']){
+  const src=$(k+'Src'),url=$(k+'Url'),f=$(k+'UrlF');
+  src.value=LS.get(k+'Src','osm');url.value=LS.get(k+'Url','');f.hidden=src.value!=='arcgis';
+  src.onchange=()=>{f.hidden=src.value!=='arcgis';LS.set(k+'Src',src.value);};
+  url.onchange=()=>LS.set(k+'Url',url.value.trim());}
+$('crs').value=LS.get('crs','ramsey');$('crs').onchange=()=>LS.set('crs',$('crs').value);
+$('basemap').value=LS.get('basemap','esri');$('basemap').onchange=()=>setBasemap($('basemap').value);
+document.addEventListener('keydown',e=>{if(e.key==='Escape')setSelecting(false);});
+window.addEventListener('resize',()=>{if(view==='cad')resize();});
+window.addEventListener('load',()=>{showVersion();initMap();updateDrawInfo();log('App started');});
 </script>
 </body>
 </html>

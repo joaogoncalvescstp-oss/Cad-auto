@@ -1,8 +1,13 @@
 # 🚀 CAD Auto
 
 A single-file browser app for CAD automation, built on the same navy-and-gold
-UI as **FBK Checker**. No install, no build step — open `index.html` in a
+UI as **FBK Checker**. No install, no build step: open `index.html` in a
 browser.
+
+**Draft from aerial:** drag a box on the aerial map and CAD Auto drafts the
+curb lines and building footprints inside it (from OpenStreetMap or your
+ArcGIS curb and building layers) in Ramsey County feet, shows them in a CAD
+view, and exports a DXF. See [Draft From Aerial](wiki/Draft-From-Aerial.md).
 
 ## Quick start
 
@@ -25,6 +30,7 @@ know you're not looking at a cached page. History lives in
 | | |
 |---|---|
 | 📖 [Wiki home](wiki/Home.md) | Overview and links |
+| 🛰️ [Draft from aerial](wiki/Draft-From-Aerial.md) | Select area → curb + building lines → DXF |
 | 🎨 [Design system](wiki/Design-System.md) | Colors, type, components (from FBK Checker) |
 | 🛰️ [Version badge](wiki/Version-Badge.md) | How the space emoji rotation works |
 | 🔭 [Workflow](wiki/Workflow.md) | Branches, verifying, pushing |

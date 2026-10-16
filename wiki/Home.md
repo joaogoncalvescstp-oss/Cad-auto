@@ -5,6 +5,7 @@ automation, styled with the FBK Checker design system.
 
 ## Pages
 
+- 🛰️ [Draft From Aerial](Draft-From-Aerial.md): select an area, draft curb and building lines, export DXF
 - 🎨 [Design System](Design-System.md) — colors, typography, components
 - 🛰️ [Version Badge](Version-Badge.md) — the space emoji that changes every push
 - 🔭 [Workflow](Workflow.md) — branches, checks, pushing
@@ -13,15 +14,15 @@ automation, styled with the FBK Checker design system.
 ## App layout
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│ CAD · AUTOMATION   [no file]      ↥ Load  ⊡ Fit  ↓ Export 🚀 │  ← .bar (navy, gold rule)
-├───────────────────────────────────────────────┬──────────────┤
-│ ⬚                                             │ INSPECTOR    │
-│ ✥            canvas stage (.stage)            │  .kv rows    │
-│                                               ├──────────────┤
-│ [hud]                                         │ LOG  (n)     │
-└───────────────────────────────────────────────┴──────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ CAD · AUTOMATION [n curb · n bldg]  🛰Aerial|📐CAD ⊡Fit ✕Clear ↓DXF 🚀 │  ← .bar
+├───────────────────────────────────────────────────────┬──────────────┤
+│ ▭  select box                              legend     │ DRAFT FROM   │
+│ ⛶  use visible map                                    │ 1 Area       │
+│        aerial map (Leaflet)  /  CAD canvas            │ 2 Layers     │
+│                                                       │ 3 Output     │
+│ [hud: E/N]                                    +/−     │ LOG (n)      │
+└───────────────────────────────────────────────────────┴──────────────┘
 ```
 
-On screens narrower than 840px the inspector hides and the canvas fills the
-width.
+On screens narrower than 840px the side panel moves below the map.
